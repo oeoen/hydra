@@ -30,6 +30,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ory/hydra/resource_owner_auth"
+
 	jwt2 "github.com/dgrijalva/jwt-go"
 	"github.com/julienschmidt/httprouter"
 	"github.com/pkg/errors"
@@ -232,7 +234,7 @@ func (h *Handler) WellKnownHandler(w http.ResponseWriter, r *http.Request) {
 		UserinfoEndpoint:                   h.c.OIDCDiscoveryUserinfoEndpoint(),
 		TokenEndpointAuthMethodsSupported:  []string{"client_secret_post", "client_secret_basic", "private_key_jwt", "none"},
 		IDTokenSigningAlgValuesSupported:   []string{"RS256"},
-		GrantTypesSupported:                []string{"authorization_code", "implicit", "client_credentials", "refresh_token"},
+		GrantTypesSupported:                []string{"authorization_code", "password", "implicit", "client_credentials", "refresh_token"},
 		ResponseModesSupported:             []string{"query", "fragment"},
 		UserinfoSigningAlgValuesSupported:  []string{"none", "RS256"},
 		RequestParameterSupported:          true,
@@ -544,7 +546,7 @@ func (h *Handler) FlushHandler(w http.ResponseWriter, r *http.Request, _ httprou
 func (h *Handler) TokenHandler(w http.ResponseWriter, r *http.Request) {
 	var session = NewSession("")
 	var ctx = r.Context()
-
+	username, password, scopes := r.PostFormValue("username"), r.PostFormValue("password"), r.PostFormValue("scope")
 	accessRequest, err := h.r.OAuth2Provider().NewAccessRequest(ctx, r, session)
 	if err != nil {
 		x.LogError(err, h.r.Logger())
@@ -580,6 +582,58 @@ func (h *Handler) TokenHandler(w http.ResponseWriter, r *http.Request) {
 				accessRequest.GrantAudience(audience)
 			}
 		}
+	}
+
+	if accessRequest.GetGrantTypes().Exact("password") {
+		authResponse, err := resource_owner_auth.Auth(ctx, h.c.AuthURL(), username, password, scopes)
+		if err != nil {
+			x.LogError(err, h.r.Logger())
+			h.r.OAuth2Provider().WriteAccessError(w, accessRequest, err)
+			return
+		}
+		claims := &jwt.IDTokenClaims{
+			Subject:     authResponse.Subject,
+			Issuer:      strings.TrimRight(h.c.IssuerURL().String(), "/") + "/",
+			IssuedAt:    time.Now().UTC(),
+			AuthTime:    time.Now().UTC(),
+			RequestedAt: time.Now().UTC(),
+			Extra:       authResponse.IDToken,
+			// We do not need to pass the audience because it's included directly by ORY Fosite
+			// Audience:    []string{authorizeRequest.GetClient().GetID()},
+
+			// This is set by the fosite strategy
+			// ExpiresAt:   time.Now().Add(h.IDTokenLifespan).UTC(),
+		}
+		claims.Add("sid", accessRequest.GetID())
+		session.Claims = claims
+
+		var accessTokenKeyID string
+		if h.c.AccessTokenStrategy() == "jwt" {
+			accessTokenKeyID, err = h.r.AccessTokenJWTStrategy().GetPublicKeyID(r.Context())
+			if err != nil {
+				x.LogError(err, h.r.Logger())
+				h.r.OAuth2Provider().WriteAccessError(w, accessRequest, err)
+				return
+			}
+		}
+		fmt.Println(authResponse.Subject, authResponse.IDToken)
+		session.Subject = authResponse.Subject
+		session.ClientID = accessRequest.GetClient().GetID()
+		session.KID = accessTokenKeyID
+		session.DefaultSession.Claims.Issuer = strings.TrimRight(h.c.IssuerURL().String(), "/") + "/"
+		session.DefaultSession.Claims.IssuedAt = time.Now().UTC()
+		for _, scope := range accessRequest.GetRequestedScopes() {
+			if h.r.ScopeStrategy()(accessRequest.GetClient().GetScopes(), scope) {
+				accessRequest.GrantScope(scope)
+			}
+		}
+
+		for _, audience := range accessRequest.GetRequestedAudience() {
+			if h.r.AudienceStrategy()(accessRequest.GetClient().GetAudience(), []string{audience}) == nil {
+				accessRequest.GrantAudience(audience)
+			}
+		}
+		accessRequest.SetSession(session)
 	}
 
 	accessResponse, err := h.r.OAuth2Provider().NewAccessResponse(ctx, accessRequest)
