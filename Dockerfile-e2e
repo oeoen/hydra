@@ -14,6 +14,10 @@ ADD . .
 RUN go install .
 RUN go build -buildmode=plugin -o /memtest.so ./test/e2e/plugin/memtest.go
 
+FROM alpine
+
+COPY --from=0 /go/bin/hydra /usr/bin/hydra
+
 ENTRYPOINT ["hydra"]
 
 CMD ["serve", "all"]

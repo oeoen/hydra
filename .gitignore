@@ -24,3 +24,4 @@ hydra-login-consent-node
 ./cypress/screenshots
 .env
 .run.sh
+docker-compomse.yml

@@ -576,7 +576,6 @@ func (h *Handler) TokenHandler(w http.ResponseWriter, r *http.Request) {
 				accessRequest.GrantScope(scope)
 			}
 		}
-
 		for _, audience := range accessRequest.GetRequestedAudience() {
 			if h.r.AudienceStrategy()(accessRequest.GetClient().GetAudience(), []string{audience}) == nil {
 				accessRequest.GrantAudience(audience)
@@ -605,6 +604,21 @@ func (h *Handler) TokenHandler(w http.ResponseWriter, r *http.Request) {
 			// ExpiresAt:   time.Now().Add(h.IDTokenLifespan).UTC(),
 		}
 		claims.Add("sid", accessRequest.GetID())
+
+		if accessRequest.GetGrantedScopes().Has("openid") {
+
+			openIDKeyID, err := h.r.OpenIDJWTStrategy().GetPublicKeyID(r.Context())
+			if err != nil {
+				x.LogError(err, h.r.Logger())
+				h.r.OAuth2Provider().WriteAccessError(w, accessRequest, err)
+				return
+			}
+			session.DefaultSession.Headers = &jwt.Headers{Extra: map[string]interface{}{
+				// required for lookup on jwk endpoint
+				"kid": openIDKeyID,
+			}}
+			session.DefaultSession.Claims = claims
+		}
 		session.Claims = claims
 
 		var accessTokenKeyID string
@@ -616,7 +630,6 @@ func (h *Handler) TokenHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		fmt.Println(authResponse.Subject, authResponse.IDToken)
 		session.Subject = authResponse.Subject
 		session.ClientID = accessRequest.GetClient().GetID()
 		session.KID = accessTokenKeyID
@@ -637,6 +650,16 @@ func (h *Handler) TokenHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	accessResponse, err := h.r.OAuth2Provider().NewAccessResponse(ctx, accessRequest)
+	if accessRequest.GetGrantTypes().Exact("password") && accessRequest.GetGrantedScopes().HasOneOf("openid") {
+		idToken, _, err := h.r.OpenIDJWTStrategy().Generate(ctx, session.DefaultSession.Claims.ToMapClaims(), session.DefaultSession.Headers)
+
+		if err != nil {
+			h.r.Writer().WriteError(w, r, err)
+			return
+		}
+		accessResponse.SetExtra("id_token", idToken)
+
+	}
 	if err != nil {
 		x.LogError(err, h.r.Logger())
 		h.r.OAuth2Provider().WriteAccessError(w, accessRequest, err)
