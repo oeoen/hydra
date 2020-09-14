@@ -39,12 +39,12 @@ func Auth(ctx context.Context, endpoint *url.URL, username, password, scopes str
 	if err != nil {
 		return nil, errors.New("ClientError:Timeout")
 	}
-	if resp.StatusCode > 300 {
-		return nil, fosite.ErrAccessDenied
-	}
 	defer resp.Body.Close()
 	buf := new(bytes.Buffer)
 	buf.ReadFrom(resp.Body)
+	if resp.StatusCode > 300 {
+		return nil, fosite.ErrAccessDenied
+	}
 	var authResponse = new(AuthResponse)
 	err = json.Unmarshal(buf.Bytes(), authResponse)
 	if err != nil {

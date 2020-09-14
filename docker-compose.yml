@@ -1,0 +1,13 @@
+version: '3.4'
+services:
+  hydra:
+    image: ${IMAGE_NAME}:${IMAGE_VERSION}
+    build:
+      context: ./
+      dockerfile: ./Dockerfile-e2e
+    restart: unless-stopped
+    entrypoint:
+      - /bin/sh
+    command: 
+      - -c
+      - "trap : TERM INT; tail -f /dev/null"
